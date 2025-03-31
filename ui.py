@@ -4,6 +4,7 @@ import requests
 import json
 import altair as alt
 import pandas as pd
+import io
 
 API_ENDPOINT = st.secrets["api"]["endpoint"]
 
@@ -46,6 +47,14 @@ def get_job_results(job_id):
         return None
 
 
+def create_jsonl_from_prompts(prompts_data):
+    """Create a JSONL file from the prompt data."""
+    output = io.StringIO()
+    for prompt in prompts_data:
+        output.write(json.dumps(prompt) + "\n")
+    return output
+
+
 # Main App
 def main():
     st.set_page_config(
@@ -55,6 +64,125 @@ def main():
         initial_sidebar_state="expanded",
     )
     st.title("LENS: LLM Evaluation & Scoring")
+
+    # Initialize session state for prompt creator
+    if "prompts_data" not in st.session_state:
+        st.session_state.prompts_data = []
+    if "show_prompt_creator" not in st.session_state:
+        st.session_state.show_prompt_creator = False
+    if "current_prompt" not in st.session_state:
+        st.session_state.current_prompt = {"id": "", "prompt": ""}
+    if "editing_index" not in st.session_state:
+        st.session_state.editing_index = -1
+
+    # Sidebar: Prompt Creator Button
+    st.sidebar.header("Create Prompts")
+    if st.sidebar.button("Open Prompt Creator"):
+        st.session_state.show_prompt_creator = True
+
+    # Prompt Creator Modal
+    if st.session_state.show_prompt_creator:
+        with st.sidebar.expander("Prompt Creator", expanded=True):
+            st.subheader("Create JSONL Prompts")
+
+            # Prompt list
+            if st.session_state.prompts_data:
+                st.write("Current Prompts:")
+                for i, prompt in enumerate(st.session_state.prompts_data):
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        st.write(f"**{prompt['id']}**")
+                    with col2:
+                        if st.button("Edit", key=f"edit_{i}"):
+                            st.session_state.current_prompt = prompt.copy()
+                            st.session_state.editing_index = i
+                        if st.button("Delete", key=f"delete_{i}"):
+                            st.session_state.prompts_data.pop(i)
+                            st.rerun()
+
+            # Form for adding/editing prompts
+            with st.form(key="prompt_form"):
+                st.text_input(
+                    "Prompt ID",
+                    key="prompt_id",
+                    value=st.session_state.current_prompt["id"],
+                )
+                st.text_area(
+                    "Prompt",
+                    key="prompt_text",
+                    value=st.session_state.current_prompt["prompt"],
+                )
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    submit_button = st.form_submit_button("Save Prompt")
+                with col2:
+                    cancel_button = st.form_submit_button("Cancel")
+
+            if submit_button:
+                prompt_data = {
+                    "id": st.session_state.prompt_id,
+                    "prompt": st.session_state.prompt_text,
+                }
+
+                if st.session_state.editing_index >= 0:
+                    # Update existing prompt
+                    st.session_state.prompts_data[st.session_state.editing_index] = (
+                        prompt_data
+                    )
+                    st.session_state.editing_index = -1
+                else:
+                    # Add new prompt
+                    st.session_state.prompts_data.append(prompt_data)
+
+                # Reset current prompt
+                st.session_state.current_prompt = {"id": "", "prompt": ""}
+                st.rerun()
+
+            if cancel_button:
+                st.session_state.current_prompt = {"id": "", "prompt": ""}
+                st.session_state.editing_index = -1
+                st.rerun()
+
+            # Generate and upload JSONL file
+            if st.session_state.prompts_data:
+                if st.button("Generate and Upload JSONL"):
+                    jsonl_file = create_jsonl_from_prompts(
+                        st.session_state.prompts_data
+                    )
+
+                    # Create a BytesIO object for upload
+                    jsonl_bytes = io.BytesIO(jsonl_file.getvalue().encode())
+                    jsonl_bytes.name = "prompts.jsonl"
+
+                    # Upload the file
+                    upload_response = upload_file(jsonl_bytes)
+                    if (
+                        upload_response
+                        and "bucket" in upload_response
+                        and "key" in upload_response
+                    ):
+                        st.success(
+                            f"File uploaded. File ID: {upload_response['filename']}"
+                        )
+                        st.session_state["uploaded_bucket"] = upload_response["bucket"]
+                        st.session_state["uploaded_key"] = upload_response["key"]
+                        st.session_state.show_prompt_creator = False
+                        st.rerun()
+
+                # Download option
+                jsonl_file = create_jsonl_from_prompts(st.session_state.prompts_data)
+                st.download_button(
+                    label="Download JSONL File",
+                    data=jsonl_file.getvalue(),
+                    file_name="prompts.jsonl",
+                    mime="application/json",
+                )
+
+            # Close button
+            if st.button("Close Prompt Creator"):
+                st.session_state.show_prompt_creator = False
+                st.rerun()
 
     # Sidebar: Upload Prompts File
     st.sidebar.header("Upload Prompts File")
